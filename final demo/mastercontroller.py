@@ -7,10 +7,37 @@ import string
 
 import hashlib
 from pyfingerprint.pyfingerprint import PyFingerprint
+from videocontroller.vidCapture import VideoCaptureStream
 
 MAX_USERS = 1 #increase this to add a new user
 BUF_SIZE = 10
 #q = queue.Queue(BUF_SIZE)
+
+
+
+class VidController(threading.Thread):
+    def __init__(self, group=None, target=None, name=None,
+                 args=(), kwargs=None, verbose=None):
+        super(VidController,self).__init__()
+        self.target = target
+        self.name = name
+        
+        
+        self.vidStream = VideoCaptureStream()    
+    
+   
+    
+    def run(self):      
+        #will start the vide o streaming
+        print('Video Stream Starting ...')
+        self.vidStreamEnable = True
+        while(self.vidStreamEnable == True):  
+            self.vidStream.startStream()
+            
+            
+                                
+
+   
 
 class FpController(threading.Thread):
     def __init__(self, group=None, target=None, name=None,
@@ -107,8 +134,8 @@ class MasterController: #controls the lock state
     def __init__(self):
         self.MAX_USERS = 1 # increse this to add more users
         self.userCount = 0
-        self.fpCtlr = FpController() 
-        #self.vidCtlr = VidController()
+        #   self.fpCtlr = FpController() 
+        self.vidCtlr = VidController()
         return
 
     def startFpSearcher(self):
@@ -123,6 +150,7 @@ class MasterController: #controls the lock state
         #self.vidCtlr.captureUser(1)
         
     def startVidCapture(self):
+        self.vidCtlr.start()
         pass
 
     
@@ -144,8 +172,8 @@ class MasterController: #controls the lock state
 
 if __name__ == "__main__":
     mc = MasterController()
-    mc.enrollKeyUser()
-    mc.startFpSearcher() #kick off the fp search thread
+    #mc.enrollKeyUser()
+    #mc.startFpSearcher() #kick off the fp search thread
     mc.startVidCapture()
 
     #mc.start()
