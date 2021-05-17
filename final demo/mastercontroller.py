@@ -7,11 +7,11 @@ import string
 
 import hashlib
 from pyfingerprint.pyfingerprint import PyFingerprint
+from pyfingerprint import EnroleNewUser
 from videocontroller.vidCapture import VideoCaptureStream
+from videocontroller.faceDetect import FaceDetect
 
-MAX_USERS = 1 #increase this to add a new user
-BUF_SIZE = 10
-#q = queue.Queue(BUF_SIZE)
+
 
 
 
@@ -21,18 +21,38 @@ class VidController(threading.Thread):
         super(VidController,self).__init__()
         self.target = target
         self.name = name
+        self.faceDetect = False
         
         
         self.vidStream = VideoCaptureStream()    
     
-   
+    def startStream(self):
+        self.vidStream.startStream()
+        
+    def stopStream(self):
+        self.vidStream.stopStream()
+        
+    def enableFaceDetect(self):
+        self.faceDetect = True 
+        print("Set FD Algo Active")
+        
     
     def run(self):      
         #will start the vide o streaming
         print('Video Stream Starting ...')
-        self.vidStreamEnable = True
-        while(self.vidStreamEnable == True):  
-            self.vidStream.startStream()
+        while(True):
+            self.startStream() 
+            if(self.faceDetect == True):
+                self.vidStream.recogniseFace()
+            
+            #time.sleep(0.3)
+       
+    def getFace(self):
+        return self.vidStream.getFace()
+        
+    def storeFace(self, uid, offset):
+        return self.vidStream.storeFace(uid, offset)
+            
             
             
                                 
@@ -49,59 +69,18 @@ class FpController(threading.Thread):
         self.uId = 0
         self.nextId = 0
         
+        
         self.fpR = PyFingerprint('/dev/ttyUSB0', 57600, 0xFFFFFFFF, 0x00000000)
+        self.newUser = EnroleNewUser.EnroleUser(self.fpR) 
+        
+        
 
         if ( self.fpR.verifyPassword() == False ):
             raise ValueError('The given fingerprint sensor password is wrong!')
         return    
         
     
-    def enrollUser(self): #master user
-        self.fpR.clearDatabase() #clear all templates
-        print('Waiting for Master User...')
-
-        ## Wait that finger is read
-        while ( self.fpR.readImage() == False ):
-            pass
-
-        ## Converts read image to characteristics and stores it in charbuffer 1
-        self.fpR.convertImage(0x01)
-
-        ## Checks if finger is already enrolled
-        result = self.fpR.searchTemplate()
-        positionNumber = result[0]
-
-        if ( positionNumber >= 0 ):
-            print('Template already exists at position #' + str(positionNumber))
-            exit(0)
-
-        print('Remove finger...')
-        time.sleep(1)
-
-        print('Waiting for same finger again...')
-
-        ## Wait that finger is read again
-        while ( self.fpR.readImage() == False ):
-            pass
-
-        ## Converts read image to characteristics and stores it in charbuffer 2
-        self.fpR.convertImage(0x02)
-
-        ## Compares the charbuffers
-        if ( self.fpR.compareCharacteristics() == 0 ):
-            raise Exception('Fingers do not match')
-
-        ## Creates a template
-        self.fpR.createTemplate()
-
-        ## Saves template at  position number 1 key user
-        self.nextId = 1
-        positionNumber = self.fpR.storeTemplate(self.nextId)
-        
-
-        self.nextId += 1
-        
-   
+    
     
     def run(self):      
         #will search for fingerprints   
@@ -118,9 +97,10 @@ class FpController(threading.Thread):
                 result = self.fpR.searchTemplate()
                 self.uId = result[0]
                 self.score = result[1]
+                print("fp " + str(result[0]))
                 while(self.fpR.readImage() == True): #detect finger off sensor
                     pass
-                
+                time.sleep(1)
                                 
 
     def getScore(self):
@@ -132,53 +112,113 @@ class FpController(threading.Thread):
     
 class MasterController: #controls the lock state
     def __init__(self):
+        self.users = dict() #main data store for users
         self.MAX_USERS = 1 # increse this to add more users
         self.userCount = 0
-        #   self.fpCtlr = FpController() 
+        self.searchRun = True
+        self.lock = False
+        self.fpCtlr = FpController() 
         self.vidCtlr = VidController()
         return
+        
+    class UserAc:
+        def __init__(self, id):
+            self.id = id    
+            self.fpCnt = 0
+            self.faceCnt = 0
+             
+        def getFpCnt(self):
+            return self.fpCnt
+        def getFaceCnt(self): 
+            return self.faceCnt
+    
+    def setState(self, lock):
+        if(self.lock != lock):
+            self.lock = lock
+            if(self.lock):
+                print("Lock State is LOCKED")
+            else:
+                print("Lock State is UNLOCKED")
+
 
     def startFpSearcher(self):
         self.fpCtlr.start() #now start the search for users
-        ## for test
-        while(True):
-            print(self.fpCtlr.getScore())
-            time.sleep(0.5) # sleep so searcher completes
+       
+        while(self.searchRun):
+            #print(self.fpCtlr.getScore()) #return user id and confidence
+            (uid,score) = self.fpCtlr.getScore()
+            
+            lock = True
+            if(score > 70):
+                lock = False
+            self.setState(lock)
+            
+            if(uid in self.users):
+                if(self.users[uid].getFaceCnt() < 10):
+                    #capt frame
+                    print("store user img id " + str(uid))
+                    faceCaptured = 0
+                    while(faceCaptured == 0):
+                        faceCaptured = self.vidCtlr.storeFace(uid, self.users[uid].getFaceCnt()+1)
+                    self.users[uid].fpCnt +=1
+                    self.users[uid].faceCnt += 1                    
+                else :
+                    self.searchRun = False
+            
+            time.sleep(0.5)
+            
 
-    def enrollKeyUser(self): 
-        self.fpCtlr.enrollUser() #enroll key user at location 1
-        #self.vidCtlr.captureUser(1)
+    def enrollKeyUser(self, uid): 
+        self.fpCtlr.newUser.enroleUser(uid) #enroll key user at location 1, this could br passed in also 
+        self.users[uid]= MasterController.UserAc(uid)
+        faceCaptured = 0
+        while(faceCaptured == 0):
+            faceCaptured = self.vidCtlr.storeFace(uid, uid)
+        if(faceCaptured > 0):
+            self.users[uid].faceCnt += 1
+        print("Facecount")
+        print((self.users[uid].getFaceCnt()))
+        
+            
         
     def startVidCapture(self):
         self.vidCtlr.start()
-        pass
+     
 
     
     def start(self): 
         vid_match = 0 
-        fp_score = 0
+        fp_score = 0       
+    
+        (id, score) = self.fpCtlr.getScore()
+        fp_score = score
+        print(fp_score)
+    
+    def train(self):
+        fd = FaceDetect()
+        fd.train()
+        self.vidCtlr.enableFaceDetect()
+    
+   
+
         
-        if(self.vidCtlr.isReady()): #if user is recognised with video 
-            match = self.vidCtlr.identify()
-        else:
-            (id, score) = self.fpCtlr.getScore()
-            fp_score = score
-            if(score > 70):
-                self.vidCtlr.captureUser(id)
-        if(vid_match | fp_score > 70):
-            pass ##unlock
+            
             
             
 
 if __name__ == "__main__":
     mc = MasterController()
-    #mc.enrollKeyUser()
-    #mc.startFpSearcher() #kick off the fp search thread
+    
     mc.startVidCapture()
-
-    #mc.start()
-
+   
+    mc.enrollKeyUser(1) #this will be a new user of the lock
+    
+    while(mc.searchRun == True): 
+       mc.startFpSearcher() #kick off the fp search thread
+    
+    
+    mc.train() #train classifier
     
 
-# At init I must get X pics of the user first before running the NN - Use the FP reader to ident the user and trigger the camera
-# To enroll a new user the face of existing and finger print on new user     
+
+    
